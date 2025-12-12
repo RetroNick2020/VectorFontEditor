@@ -9,7 +9,7 @@ uses
   Spin, ComCtrls, Menus, LCLType, VectorFontCreator, WinFont , BorlandCHR;
 
 Const
-  ProgramName = 'RetroNick'#39's FON/CHR Vector Font Editor';
+  ProgramName = 'RetroNick'#39's FON/CHR Vector Font Editor v1.1';
 
 type
   TEditTool = (etSelect, etMove, etLine, etDelete);
@@ -1708,8 +1708,8 @@ var
 begin
   CHR := TCHRFont.Create;
   try
-    CHR.FontName := edtFontName.Text;
-    
+    CHR.FontName :=Copy(edtFontName.Text+'XXXX',1,4); //little hack to always make sure we copy 4 character to Font name even if its empty and no if conditions
+
     // Find first defined character
     CHR.FirstChar := 255;
     for I := 0 to 255 do
@@ -1801,7 +1801,7 @@ var
   Ext: string;
 begin
   dlgSave.Filter := 'Windows FON Files (*.FON)|*.FON|Borland CHR Files (*.CHR)|*.CHR|All Files (*.*)|*.*';
-  dlgSave.FileName := edtFontName.Text + '.FON';
+  dlgSave.FileName := edtFontName.Text;
   if dlgSave.Execute then
   begin
     Ext := LowerCase(ExtractFileExt(dlgSave.FileName));
@@ -1897,7 +1897,7 @@ end;
 
 procedure TfrmVectorMain.mnuAboutClick(Sender: TObject);
 begin
-  ShowMessage('RetroNick'#39's FON/CHR Vector Font Editor' + LineEnding + LineEnding +
+  ShowMessage(ProgramName + LineEnding + LineEnding +
     'Create and edit FON/CHR vector/stroke fonts.' + LineEnding + LineEnding +
     'Features:' + LineEnding +
     '- Draw strokes with MoveTo/LineTo' + LineEnding +

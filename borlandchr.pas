@@ -479,7 +479,7 @@ begin
   WriteByte(Stream, Ord('K'));
   
   // Write description with $1A terminator
-  DescWithMarker := FDescription + #$1A;
+  DescWithMarker := #8#8+FDescription + #$1A;
   Stream.Write(DescWithMarker[1], Length(DescWithMarker));
   
   // Write header size

@@ -156,6 +156,7 @@
       <Unit>
         <Filename Value="borlandchr.pas"/>
         <IsPartOfProject Value="True"/>
+        <UnitName Value="BorlandCHR"/>
       </Unit>
     </Units>
   </ProjectOptions>

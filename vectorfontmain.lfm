@@ -808,6 +808,7 @@ object frmVectorMain: TfrmVectorMain
     Title = 'Save Vector Font'
     DefaultExt = '.FON'
     Filter = 'Windows Font Files (*.FON)|*.FON|All Files (*.*)|*.*'
+    Options = [ofOverwritePrompt, ofEnableSizing, ofViewDetail]
     Left = 104
     Top = 8
   end
