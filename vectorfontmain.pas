@@ -6,10 +6,10 @@ interface
 
 uses
   Classes, SysUtils, Forms, Controls, Graphics, Dialogs, StdCtrls, ExtCtrls,
-  Spin, ComCtrls, Menus, LCLType, VectorFontCreator, WinFont , BorlandCHR;
+  Spin, ComCtrls, Menus, LCLType, VectorFontCreator, WinFont , BorlandCHR,about;
 
 Const
-  ProgramName = 'RetroNick'#39's FON/CHR Vector Font Editor v1.1';
+  ProgramName = 'RetroNick'#39's FON/CHR Vector Font Editor v1.2';
 
 type
   TEditTool = (etSelect, etMove, etLine, etDelete);
@@ -1897,15 +1897,7 @@ end;
 
 procedure TfrmVectorMain.mnuAboutClick(Sender: TObject);
 begin
-  ShowMessage(ProgramName + LineEnding + LineEnding +
-    'Create and edit FON/CHR vector/stroke fonts.' + LineEnding + LineEnding +
-    'Features:' + LineEnding +
-    '- Draw strokes with MoveTo/LineTo' + LineEnding +
-    '- Select and move points' + LineEnding +
-    '- Undo/Redo support' + LineEnding +
-    '- Copy/Paste characters' + LineEnding +
-    '- Flip horizontal/vertical' + LineEnding + LineEnding +
-    'Built with Lazarus/Free Pascal');
+  FormAbout.ShowModal;
 end;
 
 procedure TfrmVectorMain.mnuFontMetricsClick(Sender: TObject);

@@ -1,7 +1,7 @@
 object frmVectorMain: TfrmVectorMain
-  Left = 258
+  Left = 423
   Height = 775
-  Top = 229
+  Top = 208
   Width = 1176
   BorderIcons = [biSystemMenu, biMinimize]
   BorderStyle = bsSingle

@@ -6,6 +6,9 @@
   
   Vector fonts store characters as a series of pen strokes (MoveTo/LineTo commands)
   rather than bitmaps, allowing them to scale smoothly to any size.
+
+  Compatible with Windows 10 font viewer (fontview.exe).
+  Produces NE executables with both RT_FONTDIR and RT_FONT resources.
 }
 unit VectorFontCreator;
 
@@ -60,7 +63,9 @@ type
     procedure WriteDWord(Stream: TStream; DW: LongWord);
     procedure WriteByte(Stream: TStream; B: Byte);
     procedure WriteString(Stream: TStream; const S: string; Len: Integer);
+    procedure WritePadTo(Stream: TStream; TargetPos: LongWord);
     function BuildFontResource: TMemoryStream;
+    function BuildFontDirEntry(FontRes: TMemoryStream): TMemoryStream;
     function BuildNEExecutable(FontRes: TMemoryStream): TMemoryStream;
   public
     constructor Create;
@@ -167,6 +172,12 @@ begin
   end;
 end;
 
+procedure TVectorFontCreator.WritePadTo(Stream: TStream; TargetPos: LongWord);
+begin
+  while Stream.Position < TargetPos do
+    WriteByte(Stream, 0);
+end;
+
 procedure TVectorFontCreator.SetCharacter(CharCode: Integer; const Strokes: array of TStrokePoint; CharWidth: Integer);
 var
   I: Integer;
@@ -256,14 +267,17 @@ begin
   FGlyphs[CharCode].Strokes[Idx].Y := Y;
 end;
 
+{ ======================================================================
+  Build the FNT font resource (version 1.0, vector)
+  ====================================================================== }
+
 function TVectorFontCreator.BuildFontResource: TMemoryStream;
 var
   I, J: Integer;
   CharCount: Integer;
   CharTableOffset: LongWord;
-  StrokeDataOffset: LongWord;
-  DeviceNameOffset: LongWord;
   FaceNameOffset: LongWord;
+  StrokeDataOffset: LongWord;
   StrokeOffsets: array of Word;
   TotalStrokeBytes: Integer;
   FirstDef, LastDef: Integer;
@@ -272,28 +286,30 @@ var
   CurX, CurY: Integer;
   DX, DY: Integer;
   StrokeBytes: array of Byte;
-  HeaderSize: Integer;
+  DefCharOff, BreakCharOff: Integer;
 begin
   Result := TMemoryStream.Create;
   
-  // Find first and last defined characters
+  // Find first and last defined characters (including those with no strokes)
   FirstDef := 255;
   LastDef := 0;
   for I := 0 to 255 do
-    if FGlyphs[I].Defined and (FGlyphs[I].StrokeCount > 0) then
+    if FGlyphs[I].Defined then
     begin
       if I < FirstDef then FirstDef := I;
       if I > LastDef then LastDef := I;
     end;
   
-  // If no characters with strokes, use defaults
   if FirstDef > LastDef then
   begin
     FirstDef := 32;
     LastDef := 126;
   end;
+
+  // Always include space (32) in the range — required for valid dfBreakChar
+  if FirstDef > 32 then FirstDef := 32;
   
-  CharCount := LastDef - FirstDef + 2; // +1 for range, +1 for sentinel entry
+  CharCount := LastDef - FirstDef + 2; // +1 for range, +1 for sentinel
   
   // Calculate average and max width
   WidthSum := 0;
@@ -302,8 +318,11 @@ begin
   for I := FirstDef to LastDef do
     if FGlyphs[I].Defined then
     begin
-      WidthSum := WidthSum + FGlyphs[I].Width;
-      Inc(DefCount);
+      if FGlyphs[I].Width > 0 then
+      begin
+        WidthSum := WidthSum + FGlyphs[I].Width;
+        Inc(DefCount);
+      end;
       if FGlyphs[I].Width > MaxWidth then
         MaxWidth := FGlyphs[I].Width;
     end;
@@ -315,7 +334,6 @@ begin
   
   // Build stroke data for all characters
   // Format: $80 DX DY = pen up move (relative), DX DY = pen down line (relative)
-  // IMPORTANT: Each character's data must start with $80 (MoveTo) for parser to find it
   SetLength(StrokeBytes, 0);
   SetLength(StrokeOffsets, CharCount);
   TotalStrokeBytes := 0;
@@ -324,7 +342,8 @@ begin
   begin
     StrokeOffsets[I] := TotalStrokeBytes;
     
-    if (FirstDef + I <= LastDef) and FGlyphs[FirstDef + I].Defined and (FGlyphs[FirstDef + I].StrokeCount > 0) then
+    if (FirstDef + I <= LastDef) and FGlyphs[FirstDef + I].Defined and
+       (FGlyphs[FirstDef + I].StrokeCount > 0) then
     begin
       CurX := 0;
       CurY := 0;
@@ -364,225 +383,405 @@ begin
     end;
   end;
   
-  // FNT 1.0 header layout (offsets and sizes):
-  // 0-1: Version (2)
-  // 2-5: Size (4)
-  // 6-65: Copyright (60)
-  // 66-67: Type (2)
-  // 68-69: Points (2)
-  // 70-71: VertRes (2)
-  // 72-73: HorizRes (2)
-  // 74-75: Ascent (2)
-  // 76-77: InternalLeading (2)
-  // 78-79: ExternalLeading (2)
-  // 80: Italic (1)
-  // 81: Underline (1)
-  // 82: StrikeOut (1)
-  // 83-84: Weight (2)
-  // 85: CharSet (1)
-  // 86-87: PixWidth (2)
-  // 88-89: PixHeight (2)
-  // 90: PitchAndFamily (1)
-  // 91-92: AvgWidth (2)
-  // 93-94: MaxWidth (2)
-  // 95: FirstChar (1)
-  // 96: LastChar (1)
-  // 97: DefaultChar (1)
-  // 98: BreakChar (1)
-  // 99-100: WidthBytes (2)
-  // 101-104: Device (4)
-  // 105-108: Face (4)
-  // 109-112: BitsPointer (4)
-  // 113-116: BitsOffset (4)
-  // Total: 117 bytes
-  
-  HeaderSize := 117;
-  CharTableOffset := HeaderSize;
-  StrokeDataOffset := CharTableOffset + LongWord(CharCount * 4);
-  DeviceNameOffset := StrokeDataOffset + LongWord(TotalStrokeBytes);
-  FaceNameOffset := DeviceNameOffset + 1;
-  
-  // Write header
-  WriteWord(Result, $0100);                    // 0: Version
-  WriteDWord(Result, FaceNameOffset + LongWord(Length(FFontName)) + 1); // 2: Size
-  WriteString(Result, FCopyright, 60);         // 6: Copyright
-  WriteWord(Result, $0001);                    // 66: Type (1 = vector)
-  WriteWord(Result, FPointSize * 20);          // 68: Points
-  WriteWord(Result, 96);                       // 70: VertRes
-  WriteWord(Result, 96);                       // 72: HorizRes
-  WriteWord(Result, FAscent);                  // 74: Ascent
-  WriteWord(Result, 0);                        // 76: InternalLeading
-  WriteWord(Result, 0);                        // 78: ExternalLeading
-  WriteByte(Result, Ord(FItalic));             // 80: Italic
-  WriteByte(Result, Ord(FUnderline));          // 81: Underline
-  WriteByte(Result, Ord(FStrikeOut));          // 82: StrikeOut
-  WriteWord(Result, Word(FWeight));            // 83: Weight
-  WriteByte(Result, Byte(FCharSet));           // 85: CharSet
-  WriteWord(Result, 0);                        // 86: PixWidth
-  WriteWord(Result, FHeight);                  // 88: PixHeight
-  WriteByte(Result, Byte(FPitchFamily));       // 90: PitchAndFamily
-  WriteWord(Result, AvgWidth);                 // 91: AvgWidth
-  WriteWord(Result, MaxWidth);                 // 93: MaxWidth
-  WriteByte(Result, FirstDef);                 // 95: FirstChar
-  WriteByte(Result, LastDef);                  // 96: LastChar
-  WriteByte(Result, Ord('.') - FirstDef);      // 97: DefaultChar
-  WriteByte(Result, Ord(' ') - FirstDef);      // 98: BreakChar
-  WriteWord(Result, 0);                        // 99: WidthBytes
-  WriteDWord(Result, DeviceNameOffset);        // 101: Device
-  WriteDWord(Result, FaceNameOffset);          // 105: Face
-  WriteDWord(Result, 0);                       // 109: BitsPointer
-  WriteDWord(Result, StrokeDataOffset);        // 113: BitsOffset
-  
-  // Verify we're at offset 117
+  // FNT 1.0 layout (matching original Windows vector fonts):
+  //   Header (117 bytes)
+  //   Character table (CharCount * 4 bytes)
+  //   Face name string (null-terminated) — between char table and stroke data
+  //   Stroke data
+  // dfDevice = 0 (no device name string)
+  // dfFace points to face name between char table and stroke data
+  // dfBitsOffset points to stroke data after the face name
+
+  CharTableOffset := 117;
+  FaceNameOffset := CharTableOffset + LongWord(CharCount * 4);
+  StrokeDataOffset := FaceNameOffset + LongWord(Length(FFontName)) + 1; // +1 for null
+
+  // Compute dfDefaultChar and dfBreakChar safely
+  // These are offsets from dfFirstChar
+  if (Ord('.') >= FirstDef) and (Ord('.') <= LastDef) then
+    DefCharOff := Ord('.') - FirstDef
+  else
+    DefCharOff := 0;
+
+  if (Ord(' ') >= FirstDef) and (Ord(' ') <= LastDef) then
+    BreakCharOff := Ord(' ') - FirstDef
+  else
+    BreakCharOff := 0;
+
+  // === FNT Header (117 bytes) ===
+  WriteWord(Result, $0100);                    // 0: dfVersion = 1.0
+  WriteDWord(Result, StrokeDataOffset +        // 2: dfSize = total resource size
+    LongWord(TotalStrokeBytes));
+  WriteString(Result, FCopyright, 60);         // 6: dfCopyright (60 bytes)
+  WriteWord(Result, $0001);                    // 66: dfType (bit 0 = vector)
+  WriteWord(Result, FPointSize);               // 68: dfPoints (nominal point size)
+  WriteWord(Result, 96);                       // 70: dfVertRes (DPI)
+  WriteWord(Result, 96);                       // 72: dfHorizRes (DPI)
+  WriteWord(Result, FAscent);                  // 74: dfAscent
+  WriteWord(Result, 0);                        // 76: dfInternalLeading
+  WriteWord(Result, 0);                        // 78: dfExternalLeading
+  WriteByte(Result, Ord(FItalic));             // 80: dfItalic
+  WriteByte(Result, Ord(FUnderline));          // 81: dfUnderline
+  WriteByte(Result, Ord(FStrikeOut));          // 82: dfStrikeOut
+  WriteWord(Result, Word(FWeight));            // 83: dfWeight
+  WriteByte(Result, Byte(FCharSet));           // 85: dfCharSet
+  WriteWord(Result, 0);                        // 86: dfPixWidth (0 = variable)
+  WriteWord(Result, FHeight);                  // 88: dfPixHeight
+  WriteByte(Result, Byte(FPitchFamily));       // 90: dfPitchAndFamily
+  WriteWord(Result, AvgWidth);                 // 91: dfAvgWidth
+  WriteWord(Result, MaxWidth);                 // 93: dfMaxWidth
+  WriteByte(Result, FirstDef);                 // 95: dfFirstChar
+  WriteByte(Result, LastDef);                  // 96: dfLastChar
+  WriteByte(Result, DefCharOff);               // 97: dfDefaultChar
+  WriteByte(Result, BreakCharOff);             // 98: dfBreakChar
+  WriteWord(Result, 0);                        // 99: dfWidthBytes
+  WriteDWord(Result, 0);                       // 101: dfDevice (0 = no device name)
+  WriteDWord(Result, FaceNameOffset);          // 105: dfFace
+  WriteDWord(Result, 0);                       // 109: dfBitsPointer (reserved)
+  WriteDWord(Result, StrokeDataOffset);        // 113: dfBitsOffset
+
+  // Verify header size
   if Result.Position <> 117 then
-    raise Exception.CreateFmt('Header size mismatch: expected 117, got %d', [Result.Position]);
+    raise Exception.CreateFmt('FNT header size mismatch: expected 117, got %d',
+      [Result.Position]);
   
-  // Write character table (offset:2, width:2 for FNT 1.0)
+  // === Character table (offset:2, width:2 per entry, FNT 1.0 format) ===
   for I := 0 to CharCount - 1 do
   begin
     WriteWord(Result, StrokeOffsets[I]);
-    if (FirstDef + I <= LastDef) and FGlyphs[FirstDef + I].Defined then
+    if (FirstDef + I <= LastDef) and FGlyphs[FirstDef + I].Defined and
+       (FGlyphs[FirstDef + I].Width > 0) then
       WriteWord(Result, FGlyphs[FirstDef + I].Width)
     else
       WriteWord(Result, AvgWidth);
   end;
-  
-  // Write stroke data
-  for I := 0 to TotalStrokeBytes - 1 do
-    WriteByte(Result, StrokeBytes[I]);
-  
-  // Write device name (empty string)
-  WriteByte(Result, 0);
-  
-  // Write face name
+
+  // === Face name (null-terminated) — placed between char table and stroke data ===
   WriteString(Result, FFontName, Length(FFontName));
   WriteByte(Result, 0);
   
+  // === Stroke data ===
+  if TotalStrokeBytes > 0 then
+    Result.WriteBuffer(StrokeBytes[0], TotalStrokeBytes);
+
   SetLength(StrokeOffsets, 0);
   SetLength(StrokeBytes, 0);
 end;
 
+{ ======================================================================
+  Build FONTDIR entry
+  Contains: ordinal (2) + partial FNT header (113 bytes) + device + face
+  ====================================================================== }
+
+function TVectorFontCreator.BuildFontDirEntry(FontRes: TMemoryStream): TMemoryStream;
+var
+  DevNameOff, FaceNameOff: LongWord;
+  B: Byte;
+begin
+  Result := TMemoryStream.Create;
+
+  // Number of fonts in this file
+  WriteWord(Result, 1);
+
+  // Font ordinal number
+  WriteWord(Result, 1);
+
+  // Copy first 113 bytes of the FNT resource (header up to dfBitsPointer)
+  FontRes.Position := 0;
+  Result.CopyFrom(FontRes, 113);
+
+  // Read dfDevice offset from FNT header at offset 101
+  FontRes.Position := 101;
+  FontRes.ReadBuffer(DevNameOff, 4);
+
+  // Read dfFace offset from FNT header at offset 105
+  FontRes.Position := 105;
+  FontRes.ReadBuffer(FaceNameOff, 4);
+
+  // Append device name string from FNT resource
+  // dfDevice = 0 means no device name — just write a null byte
+  if DevNameOff > 0 then
+  begin
+    FontRes.Position := DevNameOff;
+    repeat
+      FontRes.ReadBuffer(B, 1);
+      Result.WriteBuffer(B, 1);
+    until B = 0;
+  end
+  else
+  begin
+    B := 0;
+    Result.WriteBuffer(B, 1);
+  end;
+
+  // Append face name string from FNT resource
+  if FaceNameOff > 0 then
+  begin
+    FontRes.Position := FaceNameOff;
+    repeat
+      FontRes.ReadBuffer(B, 1);
+      Result.WriteBuffer(B, 1);
+    until B = 0;
+  end
+  else
+  begin
+    B := 0;
+    Result.WriteBuffer(B, 1);
+  end;
+end;
+
+{ ======================================================================
+  Build complete NE executable with FONTDIR + FONT resources
+  All table offsets are calculated dynamically — no hardcoding.
+  ====================================================================== }
+
 function TVectorFontCreator.BuildNEExecutable(FontRes: TMemoryStream): TMemoryStream;
 var
-  FontResSize: LongWord;
-  FontResOffset: LongWord;
-  AlignShift: Word;
+  FontDirRes: TMemoryStream;
+  FontResSize, FontDirSize: LongWord;
+  AlignShift, AlignSize: Word;
   NEHeaderPos: LongWord;
-  ResTablePos: LongWord;
-  ResNameTablePos: LongWord;
-  ModRefTablePos: LongWord;
-  ImpNameTablePos: LongWord;
-  EntryTablePos: LongWord;
+
+  // Table positions (relative to NE header)
+  SegTableOff: Word;
+  ResTableOff: Word;
+  ResNameOff: Word;
+  ModRefOff: Word;
+  ImpNameOff: Word;
+  EntryTabOff: Word;
+  EntryTabSize: Word;
+  NonResNameFileOff: LongWord;  // absolute file offset
+  NonResNameSize: Word;
+
+  // Resource layout
+  ResTableSize: Integer;
+  FontDirAligned, FontResAligned: LongWord;
+  FontDirFileOff, FontResFileOff: LongWord;
+
+  // Non-resident name table
+  NonResNameStr: string;
+  CurOff: Word;
   I: Integer;
 begin
   Result := TMemoryStream.Create;
-  FontResSize := FontRes.Size;
-  AlignShift := 4; // 16-byte alignment (1 << 4 = 16)
-  
-  // === DOS MZ Header (64 bytes) ===
-  WriteWord(Result, $5A4D);           // 00: MZ signature
-  WriteWord(Result, $0080);           // 02: Bytes on last page
-  WriteWord(Result, $0001);           // 04: Pages in file
-  WriteWord(Result, $0000);           // 06: Relocations
-  WriteWord(Result, $0004);           // 08: Header size in paragraphs (64 bytes)
-  WriteWord(Result, $0000);           // 0A: Min extra paragraphs
-  WriteWord(Result, $FFFF);           // 0C: Max extra paragraphs
-  WriteWord(Result, $0000);           // 0E: Initial SS
-  WriteWord(Result, $00B8);           // 10: Initial SP
-  WriteWord(Result, $0000);           // 12: Checksum
-  WriteWord(Result, $0000);           // 14: Initial IP
-  WriteWord(Result, $0000);           // 16: Initial CS
-  WriteWord(Result, $0040);           // 18: Relocation table offset (64)
-  WriteWord(Result, $0000);           // 1A: Overlay number
-  // 1C-3B: Reserved (32 bytes)
-  for I := 0 to 15 do
-    WriteWord(Result, 0);
-  WriteDWord(Result, $00000080);      // 3C: NE header offset = 128
-  
-  // Pad to offset 128 (0x80)
-  while Result.Position < $80 do
-    WriteByte(Result, 0);
-  
-  NEHeaderPos := Result.Position;     // Should be 0x80
-  
-  // === NE Header (64 bytes) ===
-  WriteWord(Result, $454E);           // 00: NE signature
-  WriteByte(Result, 5);               // 02: Linker version
-  WriteByte(Result, 10);              // 03: Linker revision
-  WriteWord(Result, $0040);           // 04: Entry table offset (relative to NE) = 64
-  WriteWord(Result, $0000);           // 06: Entry table size = 0
-  WriteDWord(Result, $00000000);      // 08: CRC
-  WriteWord(Result, $8000);           // 0C: Flags: LIBRARY
-  WriteWord(Result, $0000);           // 0E: Auto data segment
-  WriteWord(Result, $0000);           // 10: Heap size
-  WriteWord(Result, $0000);           // 12: Stack size
-  WriteDWord(Result, $00000000);      // 14: CS:IP
-  WriteDWord(Result, $00000000);      // 18: SS:SP
-  WriteWord(Result, $0000);           // 1C: Segment table entries = 0
-  WriteWord(Result, $0000);           // 1E: Module reference entries = 0
-  WriteWord(Result, $0000);           // 20: Non-resident name table size = 0
-  WriteWord(Result, $0040);           // 22: Segment table offset = 64 (same as entry table)
-  WriteWord(Result, $0040);           // 24: Resource table offset = 64
-  WriteWord(Result, $0058);           // 26: Resident name table offset = 88
-  WriteWord(Result, $0060);           // 28: Module reference table offset = 96
-  WriteWord(Result, $0060);           // 2A: Imported names table offset = 96
-  WriteDWord(Result, $00000000);      // 2C: Non-resident name table offset
-  WriteWord(Result, $0000);           // 30: Moveable entries
-  WriteWord(Result, AlignShift);      // 32: Alignment shift = 4
-  WriteWord(Result, $0001);           // 34: Resource segments = 1
-  WriteByte(Result, $02);             // 36: Target OS: Windows
-  WriteByte(Result, $00);             // 37: Additional flags
-  WriteWord(Result, $0000);           // 38: Fast-load offset
-  WriteWord(Result, $0000);           // 3A: Fast-load size
-  WriteWord(Result, $0000);           // 3C: Reserved
-  WriteWord(Result, $0300);           // 3E: Windows version 3.0
-  
-  // === Resource Table (at NE + 0x40 = 0xC0) ===
-  ResTablePos := Result.Position;
-  WriteWord(Result, AlignShift);      // Alignment shift
-  
-  // Resource type block for RT_FONT
-  WriteWord(Result, $8008);           // Type ID: RT_FONT with high bit
-  WriteWord(Result, $0001);           // Count = 1
-  WriteDWord(Result, $00000000);      // Reserved
-  
-  // Resource entry
-  // Font resource will be at offset 0x100 (256), which is 0x10 in 16-byte units
-  FontResOffset := $0100;
-  WriteWord(Result, FontResOffset shr AlignShift); // Offset in alignment units
-  WriteWord(Result, (FontResSize + 15) shr AlignShift); // Size in alignment units
-  WriteWord(Result, $1C30);           // Flags: MOVEABLE | PURE | PRELOAD
-  WriteWord(Result, $8001);           // Resource ID with high bit
-  WriteDWord(Result, $00000000);      // Reserved
-  
-  // End of resource types
-  WriteWord(Result, $0000);
-  
-  // === Resident Name Table (at NE + 0x58 = 0xD8) ===
-  ResNameTablePos := Result.Position;
-  WriteByte(Result, Length(FFontName));
-  WriteString(Result, FFontName, Length(FFontName));
-  WriteWord(Result, $0000);           // Ordinal
-  WriteByte(Result, $00);             // End of table
-  
-  // === Module Reference Table (at NE + 0x60 = 0xE0) ===
-  ModRefTablePos := Result.Position;
-  // Empty - no module references
-  
-  // === Imported Names Table (same offset) ===
-  ImpNameTablePos := Result.Position;
-  WriteByte(Result, 0);               // Empty table
-  
-  // === Entry Table (also empty, at NE + 0x40) ===
-  // Already covered by resource table position
-  
-  // Pad to font resource offset (0x100)
-  while Result.Position < FontResOffset do
-    WriteByte(Result, 0);
-  
-  // === Font Resource ===
-  FontRes.Position := 0;
-  Result.CopyFrom(FontRes, FontRes.Size);
+
+  // Build the FONTDIR entry
+  FontDirRes := BuildFontDirEntry(FontRes);
+  try
+    FontResSize := FontRes.Size;
+    FontDirSize := FontDirRes.Size;
+    AlignShift := 4;   // 1 << 4 = 16-byte alignment
+    AlignSize := 1 shl AlignShift;
+
+    // ================================================================
+    // Calculate NE table positions (all relative to NE header start)
+    // Layout after the 64-byte NE header:
+    //   Segment table    (0 entries = 0 bytes)
+    //   Resource table
+    //   Resident name table
+    //   Module reference table (empty)
+    //   Imported names table (1 byte: 0x00)
+    //   Entry table (1 byte: 0x00)
+    // ================================================================
+
+    CurOff := 64;  // start right after the 64-byte NE header
+
+    // Segment table (0 entries)
+    SegTableOff := CurOff;
+    // no bytes consumed
+
+    // Resource table
+    ResTableOff := CurOff;
+    // Resource table layout:
+    //   2 bytes: alignment shift
+    //   FONTDIR type block: 2+2+4 = 8 bytes header + 12 bytes per entry = 20 bytes
+    //   FONT type block:    2+2+4 = 8 bytes header + 12 bytes per entry = 20 bytes
+    //   2 bytes: end marker (type=0)
+    //   Resource name strings: 1 len + 7 "FONTDIR" = 8 bytes
+    ResTableSize := 2 + 20 + 20 + 2 + 8;
+    CurOff := CurOff + ResTableSize;
+
+    // Resident name table
+    ResNameOff := CurOff;
+    // Content: length byte + name + ordinal word + terminator byte
+    CurOff := CurOff + 1 + Length(FFontName) + 2 + 1;
+
+    // Module reference table (empty, 0 entries)
+    ModRefOff := CurOff;
+
+    // Imported names table (empty: just a 0x00 length byte)
+    ImpNameOff := CurOff;
+    CurOff := CurOff + 1;
+
+    // Entry table (empty: 2 bytes matching original Windows fonts)
+    EntryTabOff := CurOff;
+    EntryTabSize := 2;
+    CurOff := CurOff + EntryTabSize;
+
+    // ================================================================
+    // Calculate resource data positions (absolute file offsets)
+    // Resources go after NE tables, aligned to AlignSize boundaries
+    // ================================================================
+
+    // Absolute position after all NE tables
+    // NE header is at file offset $80, tables end at $80 + CurOff
+    FontDirFileOff := (($80 + CurOff) + AlignSize - 1) and (not (AlignSize - 1));
+    FontDirAligned := (FontDirSize + AlignSize - 1) and (not (AlignSize - 1));
+
+    FontResFileOff := FontDirFileOff + FontDirAligned;
+    FontResAligned := (FontResSize + AlignSize - 1) and (not (AlignSize - 1));
+
+    // Non-resident name table goes after font resource
+    NonResNameFileOff := FontResFileOff + FontResAligned;
+    NonResNameStr := FFontName + ' font';
+    NonResNameSize := 1 + Length(NonResNameStr) + 2 + 1; // len + str + ord + term
+
+    // ================================================================
+    // Write DOS MZ stub header (64 bytes + padding to $80)
+    // ================================================================
+    WriteWord(Result, $5A4D);           // 00: MZ signature
+    WriteWord(Result, $0080);           // 02: Bytes on last page
+    WriteWord(Result, $0001);           // 04: Pages in file
+    WriteWord(Result, $0000);           // 06: Relocations
+    WriteWord(Result, $0004);           // 08: Header size in paragraphs
+    WriteWord(Result, $0000);           // 0A: Min extra paragraphs
+    WriteWord(Result, $FFFF);           // 0C: Max extra paragraphs
+    WriteWord(Result, $0000);           // 0E: Initial SS
+    WriteWord(Result, $00B8);           // 10: Initial SP
+    WriteWord(Result, $0000);           // 12: Checksum
+    WriteWord(Result, $0000);           // 14: Initial IP
+    WriteWord(Result, $0000);           // 16: Initial CS
+    WriteWord(Result, $0040);           // 18: Relocation table offset
+    WriteWord(Result, $0000);           // 1A: Overlay number
+    for I := 0 to 15 do                // 1C-3B: Reserved
+      WriteWord(Result, 0);
+    WriteDWord(Result, $00000080);      // 3C: NE header offset
+
+    WritePadTo(Result, $80);
+
+    // ================================================================
+    // Write NE header (64 bytes)
+    // ================================================================
+    NEHeaderPos := Result.Position;     // = $80
+
+    WriteWord(Result, $454E);           // 00: NE signature
+    WriteByte(Result, 5);               // 02: Linker version
+    WriteByte(Result, 10);              // 03: Linker revision
+    WriteWord(Result, EntryTabOff);     // 04: Entry table offset (relative to NE)
+    WriteWord(Result, EntryTabSize);    // 06: Entry table length in bytes
+    WriteDWord(Result, $00000000);      // 08: CRC
+    WriteWord(Result, $8000);           // 0C: Module flags: LIBRARY
+    WriteWord(Result, $0000);           // 0E: Auto data segment number
+    WriteWord(Result, $0000);           // 10: Initial heap size
+    WriteWord(Result, $0000);           // 12: Initial stack size
+    WriteDWord(Result, $00000000);      // 14: CS:IP entry point
+    WriteDWord(Result, $00000000);      // 18: SS:SP initial stack
+    WriteWord(Result, $0000);           // 1C: Segment table entry count = 0
+    WriteWord(Result, $0000);           // 1E: Module reference table entry count = 0
+    WriteWord(Result, NonResNameSize);  // 20: Non-resident name table size
+    WriteWord(Result, SegTableOff);     // 22: Segment table offset
+    WriteWord(Result, ResTableOff);     // 24: Resource table offset
+    WriteWord(Result, ResNameOff);      // 26: Resident name table offset
+    WriteWord(Result, ModRefOff);       // 28: Module reference table offset
+    WriteWord(Result, ImpNameOff);      // 2A: Imported names table offset
+    WriteDWord(Result, NonResNameFileOff); // 2C: Non-resident name table (absolute)
+    WriteWord(Result, $0000);           // 30: Movable entry point count
+    WriteWord(Result, AlignShift);      // 32: Segment alignment shift count
+    WriteWord(Result, $0000);           // 34: Resource segment count
+    WriteByte(Result, $02);             // 36: Target OS = Windows
+    WriteByte(Result, $00);             // 37: Additional flags
+    WriteWord(Result, $0000);           // 38: Fast-load offset
+    WriteWord(Result, $0000);           // 3A: Fast-load length
+    WriteWord(Result, $0000);           // 3C: Reserved
+    WriteWord(Result, $0300);           // 3E: Expected Windows version 3.0
+
+    // Verify we wrote exactly 64 bytes of NE header
+    if Result.Position <> NEHeaderPos + 64 then
+      raise Exception.CreateFmt('NE header size error: expected %d, got %d',
+        [NEHeaderPos + 64, Result.Position]);
+
+    // ================================================================
+    // Write Resource Table
+    // ================================================================
+    WriteWord(Result, AlignShift);      // Alignment shift count
+
+    // --- RT_FONTDIR type block (type $8007) ---
+    WriteWord(Result, $8007);           // Type ID: RT_FONTDIR
+    WriteWord(Result, $0001);           // Count = 1
+    WriteDWord(Result, $00000000);      // Reserved
+    // FONTDIR resource entry
+    // Name ID: offset from resource table start to "FONTDIR" name string
+    // String is at: align(2) + FONTDIR block(20) + FONT block(20) + end(2) = 44 = $2C
+    WriteWord(Result, Word(FontDirFileOff shr AlignShift));  // Offset
+    WriteWord(Result, Word((FontDirSize + AlignSize - 1) shr AlignShift)); // Size
+    WriteWord(Result, $0C50);           // Flags: MOVEABLE | PRELOAD
+    WriteWord(Result, $002C);           // Name: offset $2C to "FONTDIR" string
+    WriteDWord(Result, $00000000);      // Reserved
+
+    // --- RT_FONT type block (type $8008) ---
+    WriteWord(Result, $8008);           // Type ID: RT_FONT
+    WriteWord(Result, $0001);           // Count = 1
+    WriteDWord(Result, $00000000);      // Reserved
+    // FONT resource entry
+    WriteWord(Result, Word(FontResFileOff shr AlignShift));  // Offset
+    WriteWord(Result, Word((FontResSize + AlignSize - 1) shr AlignShift)); // Size
+    WriteWord(Result, $1C30);           // Flags: MOVEABLE | PURE | PRELOAD
+    WriteWord(Result, $8001);           // Name ID: ordinal 1
+    WriteDWord(Result, $00000000);      // Reserved
+
+    // End of resource types
+    WriteWord(Result, $0000);
+
+    // Resource name strings (referenced by name offsets above)
+    WriteByte(Result, 7);               // Length of "FONTDIR"
+    WriteString(Result, 'FONTDIR', 7);  // "FONTDIR" (no null terminator)
+
+    // ================================================================
+    // Write Resident Name Table
+    // ================================================================
+    WriteByte(Result, Length(FFontName));
+    WriteString(Result, FFontName, Length(FFontName));
+    WriteWord(Result, $0000);           // Ordinal 0 = module name
+    WriteByte(Result, $00);             // End of table
+
+    // ================================================================
+    // Module reference table (empty, 0 entries)
+    // Imported names table (empty: 1 byte)
+    // ================================================================
+    WriteByte(Result, $00);             // Empty imported names table
+
+    // ================================================================
+    // Entry table (empty: 2 bytes matching original Windows fonts)
+    // ================================================================
+    WriteByte(Result, $00);             // End of entry table byte 1
+    WriteByte(Result, $00);             // End of entry table byte 2
+
+    // ================================================================
+    // Pad to FONTDIR resource position and write it
+    // ================================================================
+    WritePadTo(Result, FontDirFileOff);
+    FontDirRes.Position := 0;
+    Result.CopyFrom(FontDirRes, FontDirRes.Size);
+
+    // ================================================================
+    // Pad to FONT resource position and write it
+    // ================================================================
+    WritePadTo(Result, FontResFileOff);
+    FontRes.Position := 0;
+    Result.CopyFrom(FontRes, FontRes.Size);
+
+    // ================================================================
+    // Pad to non-resident name table and write it
+    // ================================================================
+    WritePadTo(Result, NonResNameFileOff);
+    WriteByte(Result, Length(NonResNameStr));
+    WriteString(Result, NonResNameStr, Length(NonResNameStr));
+    WriteWord(Result, $0000);           // Ordinal 0 = module description
+    WriteByte(Result, $00);             // End of table
+
+  finally
+    FontDirRes.Free;
+  end;
 end;
 
 procedure TVectorFontCreator.SaveToFile(const FileName: string);

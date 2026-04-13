@@ -1,0 +1,55 @@
+object FormAbout: TFormAbout
+  Left = 317
+  Height = 245
+  Top = 398
+  Width = 393
+  BorderStyle = bsDialog
+  Caption = 'About'
+  ClientHeight = 245
+  ClientWidth = 393
+  Position = poMainFormCenter
+  LCLVersion = '3.4.0.0'
+  object OkButton: TButton
+    AnchorSideLeft.Control = Owner
+    AnchorSideLeft.Side = asrCenter
+    Left = 159
+    Height = 25
+    Top = 187
+    Width = 75
+    Caption = 'Ok'
+    TabOrder = 0
+    OnClick = OkButtonClick
+  end
+  object Label1: TLabel
+    AnchorSideLeft.Control = Owner
+    AnchorSideLeft.Side = asrCenter
+    Left = 48
+    Height = 15
+    Top = 16
+    Width = 296
+    Caption = 'RetroNick''s Vector Font Editor v1.2 By RetroNick (c) 2026'
+  end
+  object Label2: TLabel
+    AnchorSideLeft.Control = Owner
+    AnchorSideLeft.Side = asrCenter
+    Left = 61
+    Height = 45
+    Top = 56
+    Width = 270
+    Caption = 'Get Raster Master Sprite Editor, Bitmap Font Editor, '#13#10'Network Scanner, and other programming utilities '#13#10'from my itch.io site.'
+  end
+  object GoToItchIOButton: TButton
+    AnchorSideLeft.Control = Owner
+    AnchorSideLeft.Side = asrCenter
+    Left = 120
+    Height = 47
+    Top = 120
+    Width = 153
+    Caption = 'Go To itch.io'
+    Font.Height = 24
+    Font.Style = [fsItalic, fsUnderline]
+    ParentFont = False
+    TabOrder = 1
+    OnClick = GoToItchIOButtonClick
+  end
+end
